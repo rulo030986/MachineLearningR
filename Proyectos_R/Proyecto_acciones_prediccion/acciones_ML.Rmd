@@ -1,0 +1,190 @@
+---
+title: "Pronóstico de valor de acciones"
+output:
+  pdf_document: default
+  html_document: default
+date: '2022-10-06'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# invocando librerías a utilizar
+library(quantmod)
+library(lubridate)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(caret)
+```
+
+```{r}
+hoy <- today()
+acciones <- getSymbols("^IXIC", from = "2015-01-01", to = hoy, src = "yahoo", auto.assign =  F)[,6]
+```
+
+Hemos cargado la tabla `acciones` con la información del cierre de las acciones.
+
+```{r}
+plot(acciones)
+```
+
+```{r}
+acciones <- as.data.frame(acciones)
+acciones$Fecha <- rownames(acciones)
+rownames(acciones) <- NULL
+names(acciones) <- c("Precio", "Fecha") 
+```
+
+Ya tenemos un DataFrame que tiene dos columnas, una con los precios de las acciones del índice `S&P 500` y otra con las fechas.
+
+```{r}
+str(acciones)
+```
+
+```{r}
+acciones$Fecha <- as.Date(acciones$Fecha)
+```
+
+Convertimos la columna `Fecha` a formato `Date`. Ahora vamos a crear un rango de fechas adicionales , que representan los días que queremos pronosticar.
+
+```{r}
+rango_fecha <- (hoy):(hoy + 30) 
+Precio <- as.numeric(NA)
+rango_fecha <- as.data.frame(cbind(Precio, rango_fecha)) 
+rango_fecha$Fecha <- as.Date(rango_fecha$rango_fecha) 
+rango_fecha$rango_fecha <- NULL
+```
+
+Vamos a juntar los DataFrame `acciones` y `rango_fecha` para tener datos de entrenamiento y datos a predecir juntos.
+
+```{r}
+acciones <- rbind(acciones, rango_fecha)
+```
+
+Vamos a usar un modelo de `Machine Learning` para predecir el costo de las acciones de `S&P 500` a futuro. Lo que vamos a intentar hacer es explicar la variable `Precio` a partir de tres variables independientes que serían `Año`, `Mes` y `Día`. Usaremos un modelo de `bosque aleatorio` que usa `árboles de decisión`.
+
+Tenemos que tener claro que hay comportamientos en la variable `Precio` que no se pueden predecir solamente con estas tre variables. El comportamiento a nivel local, en días cercanos, dependerá de otros factores. Por ejemplo, tenemos una caída abrusca en enero de 2020 debido a la pandemia y tenemos otra caída abrupta en enero de 2022 cuando comenzaron los aires de guerra en Ucrania.
+
+Otras variables que pueden explicar el `Precio` son:
+
+-   Ocurrencia de eventos particulares
+-   Precios de otras comodities, etc.
+-   Empreses que estén relacionadas.
+
+```{r}
+acciones$Fecha_dup <- acciones$Fecha
+acciones <- acciones %>% separate(Fecha, c("Año", "Mes", "Día"))
+```
+
+```{r}
+acciones$Año <- as.numeric(acciones$Año)
+acciones$Mes <- as.numeric(acciones$Mes)
+acciones$Día <- as.numeric(acciones$Día)
+str(acciones)
+```
+
+## Modelos de Machine Learning para predecir el precio de las acciones
+
+### Redes neuronales
+
+Vamos a escalar los datos.
+
+```{r}
+
+acciones.sc <- as.data.frame(cbind(acciones$Precio, acciones$Fecha_dup, scale(acciones[,c(2:4)])))
+names(acciones.sc)[1] <- "Precios"
+names(acciones.sc)[2] <- "Fecha"
+acciones.sc$Fecha <- as.Date(acciones.sc$Fecha)
+```
+
+Definimos los conjuntos de entrenamiento y de prueba.
+
+```{r}
+set.seed(1986)
+train_data <- createDataPartition(na.omit(subset(acciones, acciones$Fecha_dup < today()))$Precio, p = 0.7, list = F) 
+
+test_data <- rbind(acciones[-train_data,], subset(acciones, acciones$Fecha_dup >= today()))
+```
+
+Hemos definido dos estructuras que nos van a servir para definir el modelo de ML:
+
+-   `train_data`: es una subconjunto de índices del DataFrame `acciones` que van a servir para entrenar al modelo.
+-   `test_data`: es un subconjunto de `acciones` definido por los otros índices que no son de entrenamiento y los datos a predecir.
+
+Vamos a escalar el `test_data`.
+
+```{r}
+test_data_sc <- as.data.frame(cbind(test_data$Precio, test_data$Fecha_dup, scale(test_data[,c(2:4)])))
+names(test_data_sc)[1] <- "Precio"
+names(test_data_sc)[2] <- "Fecha"
+test_data_sc$Fecha <- as.Date(test_data_sc$Fecha)
+```
+
+```{r}
+library(neuralnet)
+library(NeuralNetTools)
+```
+
+**Desventajas de los modelos neuronales**
+
+Las redes neuronales requieren escalado. Son más lentos, hay modelos que son muchos más rápidos. Es muy sensible a las variables.
+
+```{r}
+mod = neuralnet(formula = Precios ~ Año + Mes + Día, data = acciones.sc[train_data,], hidden = 2, threshold = 0.01, stepmax = 1e+08, rep = 1, linear.output = TRUE)
+```
+
+Aquí en este paso calculamos el modelo con los parámetros que les hemos puesto.
+
+```{r}
+pred_data = compute(mod, test_data_sc) 
+```
+
+```{r}
+plotnet(mod)
+```
+
+Calculamos la preducción.
+
+```{r}
+datos = cbind(pred_data$net.result, test_data_sc)
+```
+
+```{r}
+error_abs = RMSE(datos$Precio, datos$`pred_data$net.result`,na.rm = TRUE)
+error_por = error_abs/datos[datos$Fecha == max(na.omit(datos)$Fecha),]$Precio*100
+error_por
+```
+
+```{r}
+ggplot() + geom_line(data = datos, aes(x = Fecha, y = Precio), color = "blue") + geom_line(data = datos, aes(x = Fecha, y = `pred_data$net.result`), color = "red")
+```
+
+## Prediciendo los precios usando `RandomForest`
+
+```{r}
+library(randomForest)
+```
+
+```{r}
+mod_rf = randomForest(Precio ~ Año + Mes + Día, data = acciones[train_data,], type = "regression", ntree = 100)
+
+pred_rf = predict(mod_rf, test_data)
+```
+
+```{r}
+datos_rf = cbind(pred_rf, test_data)
+
+```
+
+```{r}
+error_abs_rf = RMSE(datos$Precio, datos_rf$pred_rf, na.rm = TRUE)
+error_por_rf = error_abs_rf/datos_rf[datos_rf$Fecha_dup == max(na.omit(datos_rf)$Fecha_dup),]$Precio*100
+error_por_rf
+```
+
+```{r}
+ggplot() + geom_line(data = datos_rf, aes(x = Fecha_dup, y = Precio), color = "blue") + geom_line(data = datos_rf, aes(x = Fecha_dup, y = pred_rf), color = "red")
+```
